@@ -1,0 +1,1306 @@
+
+library(tidyverse) # 常规数据处理核心包
+library(reshape2) # 常规数据处理包
+library(ggsci) # 配色包
+library(readxl) # 读取excel
+library(showtext) # 字体包
+showtext_auto(enable=T) # 配合上一条，避免中文字符乱码
+library(ggplotify) # 热图转ggplot对象
+library(tibble) # 提供column_to_rownames函数
+# library(Hmisc) # 提供 rcorr()
+# library(scales) # 提供 capitalize
+# library(xlsx) # 读取excel
+# https://www.jianshu.com/p/f397eea4a3ee  # 拼图
+library(patchwork) # 拼图
+ library(cowplot) # 拼图
+  
+library(Seurat) # 单细胞数据处理核心R包
+options(Seurat.object.assay.version = "v5") # 指定 Seruat 对象使用 v5 的结构
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072*6 ) 
+### 版本要求（2023-12-01）：
+# Seurat：5.0.0
+# SeuratObject：5.0.1
+# Matrix：1.6-3
+GSE = "GSE198183"
+Info = "GSE198183-Pancreatitis-scRNA_Mus"  
+  
+## 0.1 信息设置（非必要）----
+GSE = "GSE198183"
+Info = "GSE198183-Pancreatitis-scRNA_Mus"
+Code = "R codes was collected by Dr. Hu from the Second Xiangya Hospital of Central South University"
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072*6 ) # 读取文件报错时，提高缓存大小
+
+
+### 保存数据的不同方法
+# save 可以多个一起保存
+#save( GSE, Info, meta, file = "0-metadata.rdata" )
+#load( "0-metadata.rdata" )
+# 单个保存，读取时可以改名
+#saveRDS( meta, file = "0-metadata.rds" )
+#meta2 = readRDS( "0-metadata.rds" )
+#rm( meta2 ) # 擦除变量
+gc() # 释放未使用内存
+
+
+
+## 1.1 数据读取和 Seurat 对象建立----
+
+# 注意：
+# 数据读取部分不是本次教程的重点，目前的单细胞数据经cellranger比对后一个样本会产生3个文件（barcodes、features、matrix），
+# 可以用 Read10X 读取，方法比较简单，网上教程也比较多，唯一要注意的是得放在同一个文件夹，并且3个文件只能用标准的文件名。
+# 本教程使用的数据是来自 GEO 数据库的 GSE244173。
+# 数据具体信息：https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE244173
+
+
+### a、表达矩阵读取
+CER_2d = ReadMtx(
+  mtx='./CER_CER_2d/GSM5940187_C2D_1_matrix.mtx.gz',
+  cells='./CER_CER_2d/GSM5940187_C2D_1_barcodes.tsv.gz',
+  features='./CER_CER_2d/GSM5940187_C2D_1_features.tsv.gz')
+### 查看表达矩阵的一些特点
+class(CER_2d) # 查看类型，稀疏矩阵占用的内存比较少
+object.size(CER_2d) # 查看占用内存
+dim(CER_2d) # 查看行列数
+CER_2d[ 1:5, 1:5 ] # 检阅部分内容
+
+table( CER_2d@x < 0 ) # 多少小于0
+table( CER_2d@x == 0 ) # 多少等于0，== 的意思是等于，此处为0，因为稀疏矩阵中的 0 不显示
+
+
+hist( CER_2d@x, breaks = 100 ) # 频数图
+hist( log2( CER_2d@x), breaks = 100 ) # 频数图
+
+
+# 每个基因
+geneCER_2d = dimnames(CER_2d)[[1]]
+head( geneCER_2d )
+
+
+# 每个细胞
+cellCER_2d = dimnames(CER_2d)[[2]]
+head( cellCER_2d )
+
+### b、metadata 建立
+# 给每个细胞加上样本、分组信息（非必要，可以后续再添加）
+metadata_CER_2d = data.frame( row.names = cellCER_2d ) %>% # 创建一个空的 df
+  mutate( . , sample = "CER_2d" ) %>% # 用 mutate 新增属性列
+  mutate( . ,individual = "CER_2d" ) %>%
+  mutate( . ,group = "CER_2d" )
+
+# 每列都是一种属性
+head( metadata_CER_2d )
+
+
+
+### c、Seurat对象创建
+CER_2d_seurat = CreateSeuratObject( counts = CER_2d, # 提供表达矩阵数据
+                          meta.data = metadata_CER_2d, # 提供细胞属性数据（非必要，可以先空着）
+                          project = "CER_2d", # 对象的名称，可以自己定义
+                          min.cells = 5, # 只保留至少在 xx 个细胞中有表达的基因，根据每个样本的细胞数和基因数决定筛选阈值，建议不设置，设高了会导致留下的基因数太少
+                          min.features = 100 # 只保留至少有 xx 个基因表达的细胞，根据每个样本的细胞数和基因数决定筛选阈值
+                          )
+# 在RNA 到 counts 中间，多了一层 layer，自带的功能不会受影响，自定义的一些function可能受影响
+CER_2d_seurat
+
+CER_2d_seurat@assays[["RNA"]]@layers[["counts"]] # 中间多了一个 layer
+
+
+# 现在的 dimnames 藏到了这里，counts 里面的 dimnames 是空的
+Dimnames_CER_2d_seurat = CER_2d_seurat@assays[["RNA"]]@features 
+dimnames(Dimnames_CER_2d_seurat)[[1]]
+
+CER_2d_seurat@assays[["RNA"]]@layers[["counts"]]@Dimnames 
+
+
+
+
+### d、合并Seurat对象
+# 再读取一个样本
+#xxx2 =  Read10X( "./GSE244173_RAW/GSM7808276_CG-3Dose-Af-3" ) 
+CER_sc_2d = ReadMtx(
+  mtx='./CER_sc_2d/GSM5940189_S2D_1_matrix.mtx.gz',
+  cells='./CER_sc_2d/GSM5940189_S2D_1_barcodes.tsv.gz',
+  features='./CER_sc_2d/GSM5940189_S2D_1_features.tsv.gz')
+
+
+dim(CER_sc_2d)
+cell_CER_sc_2d = dimnames(CER_sc_2d)[[2]]
+metadata2 = data.frame( row.names = cell_CER_sc_2d ) %>% # 创建一个空的 df
+  mutate( . ,sample = "CER_sc_2d" ) %>% # 用 mutate 新增属性列
+  mutate( . ,individual = "CER_sc_2d" )%>% # 用 mutate 新增属性列
+  mutate( . ,group = "CER_sc_2d" )
+#
+CER_sc_2d_seurat = CreateSeuratObject( counts = CER_sc_2d, # 提供表达矩阵数据
+                          meta.data = metadata2, # 提供细胞属性数据
+                          project = "CER_sc_2d", # 对象的名称，可以自己定义
+                          min.cells = 5, # 只保留至少在 xx 个细胞中有表达的基因，根据每个样本的细胞数和基因数决定筛选阈值，建议设置低点，不然留下的基因会很少
+                          min.features = 100 # 只保留至少有 xx 个基因表达的细胞，根据每个样本的细胞数和基因数决定筛选阈值
+)
+
+
+# merge 合并
+sc_int = merge( CER_2d_seurat, CER_sc_2d_seurat )
+# 如果有3个以上的样本，可以用 sc_int = merge( yyy, list( yyy2, yyy3 ) )
+
+# v5 结构中，layer 下面会出现两个独立的 counts，在后续分析中会合并
+sc_int
+
+names( sc_int@assays$RNA@layers )
+
+save( sc_int, file = "0-metadata.rdata" )
+# 清除数据，释放内存
+rm( list = ls() ); gc()
+
+
+
+
+## 1.2 多样本读取和合并----
+
+# a、设置读取路径和样本id
+# 每个样本的id可以自己定义，但是要保证是唯一的，并且方便与其他数据匹配，这里取 GSM 编号比较方便。
+raw_path = data.frame(
+  path = list.files( "~/5-公众号/20231201-单细胞简易流程Seurat5/GSE244173_RAW", full.names = T )
+)  %>%  # 改成自己存放 rawdata 的文件夹
+  setNames( "path" ) %>% 
+  mutate( id = gsub( "^.*RAW/", "", path ) )  %>% 
+  mutate( id = gsub( "_.*$", "", id ) ) 
+raw_path$id
+
+
+# 不会用 gsub 等做文本正则式处理的，可以用土办法建立 df
+raw_path = data.frame(
+  path = list.files( "~/5-公众号/20231201-单细胞简易流程Seurat5/GSE244173_RAW", full.names = T ),
+  id = c( "GSM7808275", "GSM7808276", "GSM7808277", "GSM7808278", 
+          "GSM7808279", "GSM7808280", "GSM7808281", "GSM7808282", 
+          "GSM7808283", "GSM7808284", "GSM7808285", "GSM7808286" )
+)
+
+
+
+# b、循环读取和创建 Seurat 对象
+# 用一个比较方便的循环函数，lapply，不会用的可以按照前面的土办法一个个读取后合并
+# 机器运行内存< 64G 的，建议学习时不要读取这么多样本，可以挑选部分样本先熟悉流程，比如设置 1:4，或 c(1:4,7:10)，或 c(1,2,7,8)
+scdata_ls = lapply( c(1:12), function(xx){ # function 里的 xx 来自 1:12，按顺序每次取一个值，然后进入大括号里面的流程
+  # xx = 1 # 如果遇到错误，可以自己指定 xx 的值，手动循环检查
+  dt_dir = raw_path[ xx, "path" ] # 按顺序，取出 xx 对应的数据路径
+  dt_id = raw_path[ xx, "id" ]
+  #
+  xxx =  Read10X( dt_dir ) 
+  # metadata # metadate 创建办法同前（可选）
+  yyy = CreateSeuratObject( counts = xxx, # 提供表达矩阵数据
+                            # meta.data = metadata, # 提供细胞属性数据，这里可以先不添加meta属性，后续再统一添加，也可以在这一步就添加好
+                            project = dt_id, # 对象的名称，可以自己定义
+                            min.cells = 5, # 只保留至少在 xx 个细胞中有表达的基因，非特殊情况建议不设置
+                            min.features = 100 # 只保留至少有 xx 个基因表达的细胞，根据每个样本的细胞数和基因数决定筛选阈值
+  )
+  
+} )
+
+# 获得一个 list
+class(scdata_ls)
+
+# 12个独立的 Seurat 对象
+scdata_ls
+
+# 合并 list，用到前面说的，x放一个样本，yyy放一个list
+sc_pbmc = merge( scdata_ls[[1]], scdata_ls[2:12] )
+
+#
+save( sc_pbmc, file = "1.2-scPBMC_raw_counts.rda" )
+rm( scdata_ls, raw_path )
+
+
+
+
+## 1.3、Seurat 对象的结构和操作----
+
+load( "0-metadata.rdata" ) # 读取前面生成的样本信息
+
+
+# 处理合并的sc_int
+sc_int
+dim(sc_int) # 基因数、细胞数
+
+# 查看大小
+format( object.size(sc_int), units = "Mb", standard = "SI" ) 
+
+
+# a、查看和添加新的细胞/样本的属性值
+# 查看
+sc_int@meta.data
+colnames(sc_int)
+
+table(sc_int$orig.ident )
+
+# 查看和设置默认 ident，即分析或作图时自动提取的细胞属性
+Idents(sc_int)
+Idents(sc_int) = "orig.ident" # nCount_RNA
+
+
+# b、查看和操作表达数据
+# 查看每个细胞的 counts 数和有表达的基因数
+hist( sc_int$nCount_RNA )
+hist( sc_int$nFeature_RNA )
+
+# 查看默认的表达数据
+DefaultAssay( sc_int )
+DefaultAssay( sc_int ) = "RNA" # 指定默认使用的表达数据
+
+#
+save( sc_int, file = "1.2-sc_int_raw_counts.rda" )
+
+
+## 1.4 初步质控----
+
+# a、分析线粒体（MT）、外源性（ERCC）、核糖体（RPL/S）等基因的表达占比
+# 分析 mt- 开头的基因表达占比，即线粒体基因占比，添加 Percent.Mito 属性
+# PercentageFeatureSet: This function enables you to easily calculate the percentage of all the counts belonging to a subset of the possible features for each cell
+sc_int$Percent.Mito = PercentageFeatureSet(sc_int, pattern = "^mt-" ) 
+hist( sc_int$Percent.Mito )
+
+# 分析 Ercc 开头的基因表达占比，即外源基因占比
+sc_int$Percent.Ercc = PercentageFeatureSet(sc_int, pattern = "^Ercc" ) 
+hist( sc_int$Percent.Ercc )
+
+# 分析 RPL/RPS 开头的基因表达占比，即核糖体基因占比
+sc_int$Percent.Ribo = PercentageFeatureSet(sc_int, pattern = "^Rp[sl]" ) 
+hist( sc_int$Percent.Ribo )
+
+#
+save( sc_int, file = "1.2-sc_int_raw_counts.rda" ) # 有一些重要变化时，及时保存数据
+
+
+
+# b、分解前面的代码，看下原理，目前暂时不需要
+{# 因为是小鼠的基因，这里查找时都是首字母大写，如果是人的基因，所有字符都改成大写
+  mito.genes <- grep(pattern = "^MT-", # grep 的意思是匹配字段
+                     x = dimnames( sc_pbmc )[[1]], 
+                     value = TRUE)
+  head( mito.genes )
+  
+  ercc.genes <- grep(pattern = "^ERCC", 
+                     x = dimnames( sc_pbmc )[[1]], 
+                     value = TRUE)
+  head( ercc.genes )
+  
+  ribo.genes <- grep(pattern = "^RP[SL]", 
+                     x =  dimnames( sc_pbmc )[[1]], 
+                     value = TRUE)
+  head( ribo.genes )
+  
+  
+  # 观察这些基因表达量
+  percent.mito = PercentageFeatureSet(sc_pbmc, features = mito.genes ) 
+  hist( percent.mito )
+  
+  
+  # 使用 AddMetaData 添加新的细胞属性，和前面的代码殊途同归
+  sc_pbmc <- AddMetaData(object = sc_pbmc, 
+                         metadata = percent.mito,
+                         col.name = "percent.MT")
+  # 也可以直接增加
+  sc_pbmc$percent.MT = percent.mito
+  
+  colnames( sc_pbmc@meta.data )
+  
+  
+  rm( percent.mito, mito.genes, ercc.genes, ribo.genes  )
+  gc()
+}
+
+
+# c、自带可视化函数
+VlnPlot(sc_int, features = "nFeature_RNA", group.by = "orig.ident", 
+        alpha = 0.1, pt.size = 0.01 ) +
+  geom_hline( yintercept = 2000, color = "red" ) +
+  scale_fill_igv()
+#
+VlnPlot(sc_int, features = "nCount_RNA", group.by = "orig.ident" ) +
+  geom_hline( yintercept = 5000 )
+#  
+VlnPlot(sc_int, features = "Percent.Mito", group.by = "orig.ident" ) +
+  geom_hline( yintercept = 25, color = "red" )
+#
+VlnPlot(sc_int, features = "Percent.Ribo", group.by = "orig.ident" )
+
+
+#
+p1 <- FeatureScatter(object = sc_int, raster = F,
+                     shuffle = T, pt.size = 0.05,
+                     feature1 = "nFeature_RNA", feature2 = "nCount_RNA")+
+  scale_color_igv() +
+  guides(color = guide_legend(override.aes = list(size = 4))); p1
+
+p2 = FeatureScatter(object = sc_int, raster = F,
+                    shuffle = T, pt.size = 0.05,
+                    feature1 = "Percent.Mito", feature2 = "Percent.Ribo")+
+  scale_color_igv() +
+  guides(color = guide_legend(override.aes = list(size = 4))); p2
+
+#
+p = p1 + p2 + plot_layout( guides='collect' ) # 拼图 patchwork
+p
+# Sys.time() 
+ggsave( p, filename = "1.4_sc_int表达数据质量展示.pdf", width = 10, height = 4.5 )
+rm( p, p1, p2 )
+
+##  1.5 质控：去除低质量细胞和部分干扰因素----
+# a、查看反映数据质量的特征数值
+hist( sc_int$nCount_RNA, breaks = 100 )
+hist( sc_int$nFeature_RNA, breaks = 100 )
+hist( sc_int$Percent.Mito, breaks = 100 )
+hist( sc_int$Percent.Ribo, breaks = 100 )
+
+quantile( sc_int$nCount_RNA )
+quantile( sc_int$nFeature_RNA )
+quantile( sc_int$Percent.Mito )
+quantile( sc_int$Percent.Ribo )
+### 筛除没有统一的标准，这里因为是教学，故意多筛掉了很多细胞，
+# 请根据实际的数据特点或后续分析的结果决定筛选标准
+# b、subset 提取部分数据
+dim( sc_int )
+sc_int = subset( sc_int, nCount_RNA > 2000 ) # 无统一标准，根据不同数据，采用不同阈值
+sc_int = subset( sc_int, nFeature_RNA > 1000 )  # 无统一标准，根据不同数据，采用不同阈值
+sc_int = subset( sc_int, Percent.Mito >2 )  # 无统一标准，根据不同数据，采用不同阈值
+sc_int = subset( sc_int, Percent.Ribo >8 )  # 无统一标准，根据不同数据，采用不同阈值
+
+dim( sc_int )
+table(sc_int$orig.ident)
+
+save( sc_int, file = "1.2-sc_int_raw_counts_qc后.rda" ) # 有一些重要变化时，及时保存数据
+gc()
+
+## 1.6、归一化和标准化----
+# 设置多线程，加速运算（不是任何步骤都能多线程）
+# 请根据自己的机器配置，量力而为，不要爆内存了
+# 运行内存小于64G的，建议线程数设低点，也可以小样本先熟悉流程，在当前样本数和性能设置下，运行内存占用的峰值可能达到 80 G
+library( future )
+availableCores()
+nbrOfWorkers()
+
+plan("multisession", workers = 16 ) 
+plan()
+options(future.globals.maxSize=1000*1024^2)
+
+# 先用默认参数，观察下数据特点，后续根据需要调整参数
+
+# a、归一化，数据对齐（细胞多比较花时间）
+sc_int <- NormalizeData(sc_int,
+                        normalization.method = "LogNormalize", # 默认使用 log 转换
+                        block.size = 1000 # 默认1000，调高可以加速，调低可以减少内存占用
+) 
+
+
+# b、找高变基因
+sc_int <- FindVariableFeatures(sc_int) # 默认保留2000个
+
+# 可视化这些基因的 SV标准误差
+VariableFeaturePlot(sc_int, cols = c("grey", "steelblue") ) 
+
+#
+VariableFeaturePlot(sc_int, cols = c("grey", "steelblue") ) +
+  scale_y_log10()
+
+
+# c、标准化
+# 细胞多比较花时间，容易爆内存，不过v5已经优化很多了
+sc_int <- ScaleData(sc_int, 
+                    # features = NULL, # 默认使用2000高变基因，可以自己制定要使用的基因名，基因越多越慢越占内存
+                    # vars.to.regress = NULL, # 需要校正的因素，因素越多越慢越占内存
+                    block.size = 1000 # 默认1000，调高可以加速，调低可以减少内存占用
+) 
+#
+save( sc_int, file = "1.2-sc_int_counts_标准化后.rda" )
+
+
+# d、查看归一化和标准化后的变化，数据分布的特点
+hist(colSums(sc_int, slot = "counts" ),
+     breaks = 100,
+     main = "Raw counts" )
+
+hist(colSums(sc_int, slot = "data" ),
+     breaks = 100,
+     main = "Total expression after normalisation" ) 
+
+hist(colSums(sc_int, slot = "scale.data" ),
+     breaks = 100,
+     main = "Total expression after scaled" )
+
+
+
+
+## 1.7、降维与初步聚类----
+
+# a、主成分分析（PCA，降维）
+sc_int <- RunPCA(sc_int,
+                 npcs = 50, # 保留的主成分数量
+                 seed.use = 42 ) # 默认设置随机种子数为 42，避免每次复现差异太大
+
+# 评估主成分的区分效果，选择后续分析要使用的 dims
+ElbowPlot(sc_int, ndims = 50 )  
+
+
+
+# b、进一步降维
+# tSNE 和 UMAP 都是比较常用的降维方法，UMAP更适合大样本，哪个更好按实际情况来
+sc_int <- RunTSNE(sc_int, dims = 1:20, reduction = "pca", reduction.name = "tsne") 
+sc_int <- RunUMAP(sc_int, dims = 1:20, reduction = "pca", reduction.name = "umap")
+
+DimPlot( sc_int, reduction = "tsne" )
+DimPlot( sc_int, reduction = "umap" )
+
+
+# c、初步分群
+sc_int <- FindNeighbors(sc_int, dims = 1:20, reduction = "pca" ) # 先使用 PCA
+sc_int <- FindClusters(sc_int, 
+                       resolution = 1, # 先使用 1 的分辨率初步分群，观察数据特点
+                       cluster.name = "unintegrated_clusters")
+#
+save( sc_int, file = "1.2-sc_int_counts_初步降维后.rda" )
+
+
+
+# d、降维后可视化
+names( sc_int@reductions )
+colnames( sc_int@meta.data )
+
+DimPlot(sc_int, reduction = "pca", group.by = c("orig.ident", "unintegrated_clusters" ))
+DimPlot(sc_int, reduction = "tsne", group.by = c("orig.ident", "unintegrated_clusters" ))
+DimPlot(sc_int, reduction = "umap", group.by = c("orig.ident", "unintegrated_clusters" ))
+
+
+## 2.1、去批次、整合----
+# 参考教程1：https://zhuanlan.zhihu.com/p/667102765#%E5%86%99%E5%9C%A8%E5%89%8D%E9%9D%A2
+# 参考教程2：https://zhuanlan.zhihu.com/p/657819928
+# 要不要去批次，请根据上一步的结果判断，没有固定标准
+
+# IntegrateLayers 功能提供了几种不同的去批次整合方法：CCAIntegration，HarmonyIntegration，JointPCAIntegration，RPCAIntegration
+# 比较费时间，不是每种方法都需要，熟悉数据特点后可以选择自己偏好的整合方法
+
+# 如果爆运行内存，请调整线程数
+# 如果遇到报错信息，提示遇到global大小限制：This exceeds the maximum allowed size of 500.00 MiB
+options (future.globals.maxSize = 2200 * 1024^2) # 设置环境大小限制，稍大于提示信息要求的就行
+plan("multisession", workers = 12 ) 
+plan()
+
+sc_pbmc_int = sc_pbmc
+
+
+# a、方法1 CCA
+sc_pbmc_int <- IntegrateLayers(
+  object = sc_pbmc_int, 
+  method = CCAIntegration,
+  orig.reduction = "pca", 
+  new.reduction = "integrated.cca",
+  verbose = TRUE )
+
+# 基于cca的分群
+sc_pbmc_int <- FindNeighbors(sc_pbmc_int, reduction = "integrated.cca", dims = 1:20)
+sc_pbmc_int <- FindClusters(sc_pbmc_int, resolution = 1, cluster.name = "cca_clusters")
+sc_pbmc_int <- RunUMAP(sc_pbmc_int, reduction = "integrated.cca", dims = 1:20, reduction.name = "umap.cca")
+
+
+# b、方法2 Harmony
+sc_pbmc_int <- IntegrateLayers(
+  object = sc_pbmc_int, 
+  method = HarmonyIntegration,
+  orig.reduction = "pca", 
+  new.reduction = "harmony",
+  verbose = TRUE )
+
+# 基于harmony的分群
+sc_pbmc_int <- FindNeighbors(sc_pbmc_int, reduction = "harmony", dims = 1:20)
+sc_pbmc_int <- FindClusters(sc_pbmc_int, resolution = 1, cluster.name = "harmony_clusters")
+sc_pbmc_int <- RunUMAP(sc_pbmc_int, reduction = "harmony", dims = 1:20, reduction.name = "umap.harmony")
+
+
+# c、其他方法：RPCA、JointPCA
+# 可以自己尝试：method = JointPCAIntegration 或 RPCAIntegration
+
+save( sc_pbmc_int, file = "2.1-scPBMC_process.rda" ) 
+
+
+
+# d、分群效果
+p1 <- DimPlot(sc_pbmc_int,reduction = "umap.cca", 
+              group.by = c("individual", "cca_clusters"),
+              combine = FALSE,label.size = 2, shuffle = T )
+#
+p2 <- DimPlot(sc_pbmc_int,reduction = "umap.harmony", 
+              group.by = c("individual", "harmony_clusters"),
+              combine = FALSE,label.size = 2, shuffle = T)
+#
+wrap_plots(c(p1, p2), ncol = 2, byrow = F)
+ 
+
+
+# e、去批次效果
+p1 = DimPlot( sc_pbmc_int, reduction = "umap.unintegrated", shuffle = T,
+              group.by = c("orig.ident", "group"),combine = FALSE )
+#
+p2 = DimPlot( sc_pbmc_int, reduction = "umap.harmony", shuffle = T,
+              group.by = c("orig.ident", "group"),combine = FALSE )
+#
+wrap_plots( c(p1, p2), ncol = 2, byrow = T, guides = "collect" )
+
+
+
+# f、本次最终选择用 harmony 进行整合
+# 没有标准选择，请根据自己的数据特点选择，也可以选择不去批次直接往下走
+sc_pbmc_int <- RunTSNE(sc_pbmc_int, dims = 1:20, reduction = "harmony" )
+sc_pbmc_int <- RunUMAP(sc_pbmc_int, dims = 1:20, reduction = "harmony" ) # 基于 harmony 进一步降维
+
+save( sc_pbmc_int, file = "2.1-scPBMC_process.rda" )  
+
+
+
+
+
+## 3.1 正式分群聚类----
+
+# 在后续分析差异基因前，需要使用 JoinLayers 合并所有 layers
+# 另外也可以split拆分layers
+# 合并后 layers 下只留下一个 counts 和 data
+sc_int <- JoinLayers( sc_int )
+
+#sc_int2 <- FindNeighbors(sc_int2, reduction = "harmony", dims = 1:20)
+
+#DimPlot( sc_pbmc_int2, reduction = "umap", shuffle = T,
+#         group.by = c("individual", "group"), combine = T )
+
+#
+save( sc_int, file = "3.1-正式分群前.rda" )  
+
+# a、尝试不同分辨率下的细胞分群
+library(clustree)
+
+sc_int <- FindClusters(
+  object = sc_int,
+  resolution = c( seq( 0.1, 1.0, 0.1) ) # 分辨率从 0.2-1.6，间隔 0.2 一档
+)
+
+# 可视化
+clustree(sc_int@meta.data, prefix = "RNA_snn_res.")
+
+ggsave( filename = "3.1-PBMC分群clustree.pdf", width = 12, height = 9 )
+
+
+
+# 查看特定分辨率的分群效果
+colnames(sc_int@meta.data)
+table( sc_int$RNA_snn_res.0.2 )
+
+p1 = DimPlot( sc_int, reduction = "tsne", group.by = "RNA_snn_res.0.1", 
+         label = T, repel = F, shuffle = T )
+#
+p2 = DimPlot( sc_int, reduction = "tsne", group.by = "RNA_snn_res.0.2", 
+         label = T, repel = F, shuffle = T )
+#
+p3 = DimPlot( sc_int, reduction = "tsne", group.by = "RNA_snn_res.0.3", 
+         label = T, repel = F, shuffle = T )
+#
+p4 = DimPlot( sc_int, reduction = "tsne", group.by = "RNA_snn_res.0.4", 
+              label = T, repel = F, shuffle = T )
+#
+p5 = DimPlot( sc_int, reduction = "tsne", group.by = "RNA_snn_res.0.6", 
+              label = T, repel = F, shuffle = T )
+#
+p6 = DimPlot( sc_int, reduction = "tsne", group.by = "RNA_snn_res.1", 
+              label = T, repel = F, shuffle = T )
+
+#
+p = p1 + p2 + p3 + p4 + p5 + p6 + plot_layout( ncol = 3 )
+
+ggsave( p, filename = "3.1-PBMC分群tsne.pdf", width = 15, height = 8 )
+
+rm( p, p1, p2, p3, p4, p5, p6 )
+
+
+
+# b、选定 resolution
+# 最终选择的分辨率和分群结果要根据后面注释的情况决定，可能需要反复回头调试
+sc_int$seurat_clusters = sc_int$RNA_snn_res.0.2
+table( sc_int$seurat_clusters )
+#
+save( sc_int, file = "3.1-选定 resolution.rda" )  
+
+
+
+# c、查看分群情况
+p1 = TSNEPlot( sc_int,
+               label =T, repel = F,
+                 group.by = 'seurat_clusters')+
+  ggtitle("TSNE")+
+  theme_cowplot( )+
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  scale_color_igv(); p1
+#
+p2 = UMAPPlot( sc_int,
+               label =T,
+               group.by = 'seurat_clusters')+
+  ggtitle("UMAP")+
+  theme_cowplot( )+
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  scale_color_igv(); p2
+#
+p1 + p2 + plot_layout( guides='collect' )
+
+ggsave( filename = "3.1_PBMC最终分群展示.pdf", width = 10, height = 4.8 )
+rm( p1, p2 )
+
+
+
+
+## 3.2 分析各群细胞的的Marker----
+
+# a、FindAllMarkers 查找所有分群的DEG
+# 比较花时间
+Idents( sc_int ) = "seurat_clusters"
+#
+sc.markers <- FindAllMarkers(object = sc_int, 
+                             only.pos = FALSE, # 是否只保留表达相对上调的基因，设置FALSE则会保留下调的
+                             test.use = "wilcox", # 默认使用 wilcox 非参数检验，其它选项可以查看说明
+                             slot = "data", # 需要注意的是，默认使用 data，而不是 counts
+                             min.pct = 0.1, # 设置表达比例的阈值，没有统一标准，差异基因很多的情况下可以把阈值调高，差异基因有1000个够用
+                             logfc.threshold = 0.1 # 设置 log2FC 即差异倍率的阈值，没有统一标准，差异基因很多的情况下可以把阈值调高
+                             )
+#
+colnames( sc.markers )
+
+#
+table( sc.markers$cluster )
+  
+#
+save( sc.markers, file = "3.2_AllMarkers.rda" )
+
+# 保存 excel 文件
+library(writexl)
+writexl::write_xlsx(sc.markers, "3.2_AllMarkers.xlsx")
+
+# 在线查看（Viewer界面）
+DT::datatable(sc.markers)
+
+
+
+# b、可视化
+# 不同的可视化方法要搭配使用
+top5 = sc.markers %>% # 挑选每个群差异靠前的基因，非必要，可以用别的方法筛选或指定
+  filter( avg_log2FC > 0 ) %>% # 是否只看上调的，都可以，看自己的需求
+  group_by(cluster) %>% # 按cluster分组
+  filter( p_val_adj < 0.05 ) %>% # 按校正P值筛选，看自己的需求
+  top_n( 3, avg_log2FC ) %>% # 提取各cluster种logFC最大的3个，看前多少就设置多少
+  group_by() # 取消分组
+
+
+# 热图
+dev.off()
+pdf( file = "3.2-topDEG_of_clusters_heatmap.pdf", width = 8, height = 8 )
+#
+DoHeatmap(object = sc_int, 
+          features = top5$gene,
+          slot = 'counts',
+          label = TRUE
+          ) +
+  scale_fill_gradient( low = "grey", high = "salmon" ) # 自定义颜色
+#
+dev.off()
+
+
+# 气泡图
+DotPlot( object = sc_int, 
+         group.by = "seurat_clusters",
+         cols = c("lightgrey", "salmon3"),
+         features = unique( top5$gene ) ) +
+  coord_flip()
+
+ggsave( file = "3.2-topDEG_of_clusters_dotplot.pdf", width = 8, height = 8 )
+
+
+# 提琴图
+VlnPlot( object = sc_int,
+         group.by = "seurat_clusters", fill.by = "ident",
+         stack = T, flip = T,
+         features = unique( top5$gene ) ) +
+  scale_fill_igv() 
+
+ggsave( file = "3.2-topDEG_of_clusters_vlnplot.pdf", width = 6, height = 8 )
+
+
+# 散点图
+FeaturePlot( sc_int, features = c( "CD8A", "CD4", "ZNF683", "NKG7" ), 
+             order = F, alpha = 0.3, reduction = "umap" )
+
+
+# 自定义可视化
+colnames( sc.markers )
+
+plotdt = sc.markers %>% 
+  filter( gene %in% top5$gene ) %>% # 筛选
+  arrange( cluster, avg_log2FC ) %>% # 排序
+  mutate( gene = factor( gene, levels = unique(gene), ordered = T ) ) # 把 gene 变成有序变量，保证作图的时候排列好看
+#
+ggplot( plotdt, aes( x = cluster, 
+                     y = gene, 
+                     # y = as.character(gene), 
+                     size = avg_log2FC, 
+                     color = pct.1 ) ) +
+  geom_point(  )+
+  geom_text( aes( label = cluster ), size = 3, color = "black" ) +
+  theme_bw( )+
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  scale_color_gradient( low = "olivedrab3", high = "salmon3" )
+
+ggsave( filename = "3.2-细胞分群与marker基因.pdf", width = 5, height = 7 )
+
+
+
+
+## 3.3 分群注释----
+# 细胞注释考验专业领域知识积累，如果不了解研究对象的特点，不清楚涉及哪些细胞，以及这些细胞的公认marker，是很难注释正确的，建议多看文献，
+# 除了免疫细胞等有比较通用的marker，比较多的细胞marker并不是很特异，并且有组织差异。
+# 部分R包可自动注释，但准确性存疑，请不要完全参照
+# 可能有用的网站：https://www.rndsystems.com/cn/resources/cell-markers
+
+dim(sc_int)
+table(sc_int$seurat_clusters)
+
+
+marker_pancreas = c( 'Ctrb1','Prss2','Pnlip','Clps','Cela1','Cela3b',
+                     'Ighm','Jchain',
+                     'Cd74','Cst3','H2-Ab1','H2-Eb1','H2-Aa',
+                     'Ins1','Ins2',
+                     'Spp1','Clu',
+                     'Gcg','Sst','Ppy','Pyy',
+                     'Igfbp7','Fabp4',
+                     'Tmsb4x',
+                     'Tm4sf1',
+                     'Alas2','Gpx1',
+                     'Rpl18a','Igkc',
+                     'Prnp',
+                     'S100a8','S100a9',
+                     'Cd8a',
+                     'Iapp',
+                     'Apoe','Lyz2',
+                     'Crip1',
+                     'Gsn',
+                     'Sparc',
+                     'Dcn',
+                     'B2m','Rps','Rpl',
+                     'Arg1','Arg2','Tlr4','Nlrp3','Fkbp5','Anxa3','Casp5','Lrg1')
+
+
+# a、观察部分marker表达
+plotdt = sc.markers %>% 
+  filter( gene %in% marker_pancreas ) %>% # 筛选
+  arrange( cluster, avg_log2FC ) %>% # 排序
+  mutate( gene = factor( gene, levels = marker_pancreas, ordered = T ) ) # 把 gene 变成有序变量，保证作图的时候排列好看
+#
+ggplot( plotdt, aes( x = cluster, 
+                     y = gene, 
+                     # y = as.character(gene), 
+                     size = avg_log2FC, 
+                     color = pct.1 ) ) +
+  geom_point(  )+
+  geom_text( aes( label = cluster ), size = 3, color = "black" ) +
+  theme_bw( )+
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  scale_color_gradient2( low = "olivedrab3", high = "salmon3",
+                         mid = "yellow", midpoint = 0.5 )
+
+
+ggsave( filename = "3.3-细胞特征marker.pdf", width = 5.5, height = 6 )
+
+
+# b、注释细胞分群
+sc_int$cell_type = case_when( # 比较好用的条件判断+赋值函数
+  sc_int$seurat_clusters %in% c( 1 ) ~ "Acinar.cells",
+  sc_int$seurat_clusters %in% c( 10,11 ) ~ "B.cells",
+  sc_int$seurat_clusters %in% c( 8,12 ) ~ "Dendritic.cells",
+  #sc_int$seurat_clusters %in% c( 3,8,15 ) ~ "Dividing.cell",
+  sc_int$seurat_clusters %in% c( 2,7,16 ) ~ "Ductal.cells",
+  #sc_int$seurat_clusters %in% c( 1,4,5 ) ~ "Endocrine.cell",
+  #sc_int$seurat_clusters %in% c( 9 ) ~ "Endothelial.cell.Fabp4.high",
+  #sc_int$seurat_clusters %in% c( 13 ) ~ "Endothelial.cell.Lrg1.high",
+  #sc_int$seurat_clusters %in% c( 14 ) ~ "Endothelial.cell.Tm4sf1.high",
+  #sc_int$seurat_clusters %in% c( 1,4,5 ) ~ "Erythroblast.Hbb.bt.high",
+  #sc_int$seurat_clusters %in% c( 1,4,5 ) ~ "Erythroblast.Igkc.high",
+  sc_int$seurat_clusters %in% c( 3,4 ) ~ "Stromal.cells",
+  #sc_int$seurat_clusters %in% c( 1,4,5 ) ~ "Beta.cell",
+  #sc_int$seurat_clusters %in% c( 4,11 ) ~ "PSC",
+  sc_int$seurat_clusters %in% c( 0 ) ~ "Neutrophils",
+  sc_int$seurat_clusters %in% c( 6,9 ) ~ "Macrophages",
+  #sc_int$seurat_clusters %in% c( 10 ) ~ "Smooth.muscle.cell",
+  #sc_int$seurat_clusters %in% c( 2,6,7,11,12,13 ) ~ "Stromal.cell.Fn1.high",
+  #sc_int$seurat_clusters %in% c( 2,6,7,11,12,13 ) ~ "Stromal.cell.Mfap4.high",
+  #sc_int$seurat_clusters %in% c( 2,6,7,11,12,13 ) ~ "Stromal.cell.Smoc2.high",
+  sc_int$seurat_clusters %in% c( 5,13) ~ "T.cells",
+  TRUE ~ "unknow"
+)
+
+
+
+
+
+
+#
+table( sc_int$seurat_clusters, sc_int$cell_type )
+table( sc_int$cell_type )
+
+#
+p1 = DimPlot( sc_int, reduction = "tsne", group.by = "seurat_clusters", 
+              label = T, repel = F, shuffle = T )
+#
+p2 = DimPlot( sc_int, reduction = "tsne", group.by = "cell_type", 
+              label = T, repel = F, shuffle = T )+
+  scale_color_npg()
+#
+p1 + p2
+
+ggsave( filename = "3.3-细胞分群注释.pdf", width = 10, height = 5 )
+
+#
+save( sc_int, file = "3.3注释后.rda" ) # 有一些重要变化时，及时保存数据
+
+
+
+# c、其他可视化
+plotdata = sc_int@meta.data
+plotdata$group <- factor(plotdata$group, levels = c("CER_sc_2d","CER_2d"))
+
+
+# 细胞数量
+p1 <- ggplot( plotdata, aes( x = cell_type, fill = group ) ) +
+  geom_bar( position = "dodge" ) +
+  scale_fill_bmj(alpha = 0.7)+
+  theme_cowplot()+
+  theme(legend.key = element_blank())+
+  theme(legend.position="top")
+
+# 细胞比例
+p2 <- ggplot( plotdata, aes( x = group, fill = cell_type ) ) +
+  geom_bar( position = "fill" ) +
+  scale_fill_npg()+
+  labs(y='Proportion')+
+  theme_cowplot(10)+scale_color_nejm()+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                                                            axis.text = element_text(color = "black",size = 10))
+
+ggsave( filename = "GSE198564细胞比例比较.pdf",p2, width = 4, height = 5 )
+
+# 其他
+
+sc_int$group <- factor(sc_int$group, levels = c("CER_sc_2d","CER_2d"))
+
+p3 <- UMAPPlot( sc_int,
+          label =T,
+          split.by = "group",
+          group.by = 'cell_type')+
+  ggtitle("UMAP")+
+  theme_cowplot()+
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  scale_color_npg()+
+  theme(legend.position="bottom")
+library(aplot)
+patch <- p1+p2
+p4 <- p3/patch
+ggsave( filename = "GSE198564单细胞细胞比例比较.pdf", width = 13, height = 10 )
+
+## 4.1 差异表达基因（DEG）----
+table(sc_int$cell_type)
+table(sc_int$group)
+
+
+# a、分析细胞间整体的DEG
+# 同前，只需要要把默认 idents 从 seurat_clusters 改成 cell_type
+Idents(sc_int)
+Idents(sc_int) = "cell_type" # 把celltype设置为主要的分类标签
+
+#
+cell.markers <- FindAllMarkers(object = sc_int, 
+                             only.pos = FALSE, # 是否只保留表达相对上调的基因，设置FALSE则会保留下调的
+                             test.use = "wilcox", # 默认使用 wilcox 非参数检验，其它选项可以查看说明
+                             slot = "data", # 需要注意的是，默认使用 data，而不是 counts
+                             min.pct = 0.25, # 设置表达比例的阈值，没有统一标准，差异基因很多的情况下可以把阈值调高，差异基因有1000个够用
+                             logfc.threshold = 0.25 # 设置 log2FC 即差异倍率的阈值，没有统一标准，差异基因很多的情况下可以把阈值调高
+  )
+
+# b、分析组间的整体DEG
+# FindMarkers 适用于两组之间的比较，FindAllMarkers 适合多组同时比较
+# 参考教程：https://mp.weixin.qq.com/s/N5Z65CZ6B2yCFW192v8vqQ
+group_degs = FindMarkers( sc_int, 
+                       logfc.threshold = 0.5,
+                       # min.pct = 0.2, # 表达比例的阈值设置
+                       only.pos = FALSE,
+                    ident.1 = "CER_2d", ident.2 = "CER_sc_2d", # ident 1 vs 2
+                    group.by = "group" ) %>% # 指定用来分组的信息
+  # filter( p_val_adj < 0.05 ) %>% # 需要按校准P筛选可以加上这条
+  mutate( gene = rownames(.) ) # 将行名新增为列，方便检索基因和后续作图
+
+
+# c、分析不同对比条件下的DEG
+# 特定细胞
+table(sc_int$cell_type)
+#
+sc_Macrophage = subset(sc_int, cell_type == "Macrophages" )
+
+cell_Macrophage_degs <- FindMarkers( sc_Macrophage,  # subset 取部分数据
+                          logfc.threshold = 1, # log2FC 的阈值设置
+                          min.pct = 0.7, # 表达比例的阈值设置
+                          ident.1 = "CER_2d", ident.2 = "CER_sc_2d", # ident 1 vs 2
+                          group.by = "group" ) %>%  # ident 来源那个值
+  mutate( symbol = rownames(.) ) 
+
+# 
+cell_Acinar_degs = FindMarkers( subset(sc_int, cell_type == "Acinar.cells"), 
+                          logfc.threshold = 0.5, # log2FC 的阈值设置
+                          # min.pct = 0.2, # 表达比例的阈值设置
+                          ident.1 = "CER_2d", ident.2 = "CER_sc_2d", # ident 1 vs 2
+                          group.by = "group" ) %>% 
+  mutate( symbol = rownames(.) )
+
+cell_T_cell_degs = FindMarkers( subset(sc_int, cell_type == "T.cells"), 
+                                logfc.threshold = 0.5, # log2FC 的阈值设置
+                                # min.pct = 0.2, # 表达比例的阈值设置
+                                ident.1 = "CER_2d", ident.2 = "CER_sc_2d", # ident 1 vs 2
+                                group.by = "group" ) %>% 
+  mutate( symbol = rownames(.) )
+
+
+cell_Granulocyte_degs = FindMarkers( subset(sc_int, cell_type == "Neutrophils"), 
+                                logfc.threshold = 0.5, # log2FC 的阈值设置
+                                # min.pct = 0.2, # 表达比例的阈值设置
+                                ident.1 = "CER_2d", ident.2 = "CER_sc_2d", # ident 1 vs 2
+                                group.by = "group" ) %>% 
+  mutate( symbol = rownames(.) )
+
+
+## 4.2、其他DEG可视化方法----
+
+# a、火山图
+library( ggrepel )
+colnames(cell_Macrophage_degs)
+table( abs(cell_Macrophage_degs$avg_log2FC) > 2 )
+#
+p1 <- ggplot( cell_Macrophage_degs, aes( x = avg_log2FC, y = -log10( p_val_adj ), 
+                     color = avg_log2FC ) ) +
+  geom_point( ) +
+  ggtitle( label = "GSE198183: Macrophage", subtitle = "Caerulein vs. Caerulein saline" ) +
+  labs(x = 'log2 FC',
+       y = '-log10 adj.pvalue')+
+  scale_color_gradient2( low = "#0072B5FF", high = "#BC3C29FF", 
+                         mid = "#B09C8599", midpoint = 0 ) + 
+  theme_cowplot()+
+  theme(legend.position = 'none')
+
+p2 <- ggplot( cell_Acinar_degs, aes( x = avg_log2FC, y = -log10( p_val ), 
+                           color = avg_log2FC ) ) +
+  geom_point( ) +
+  ggtitle( label = "GSE198183: Acinar cells", subtitle = "Caerulein vs. Caerulein saline" ) +
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  labs(x = 'log2 FC',
+       y = '-log10 adj.pvalue')+
+  scale_color_gradient2( low = "#0072B5FF", high = "#BC3C29FF", 
+                         mid = "#B09C8599", midpoint = 0 ) + 
+  theme_cowplot()+
+  theme(legend.position = 'none')
+
+p3 <- ggplot( cell_T_cell_degs, aes( x = avg_log2FC, y = -log10( p_val ), 
+                                     color = avg_log2FC ) ) +
+  geom_point( ) +
+  ggtitle( label = "GSE198183: T cells", subtitle = "Caerulein vs. Caerulein saline" ) +
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  labs(x = 'log2 FC',
+       y = '-log10 adj.pvalue')+
+  scale_color_gradient2( low = "#0072B5FF", high = "#BC3C29FF", 
+                         mid = "#B09C8599", midpoint = 0 ) + 
+  theme_cowplot()+
+  theme(legend.position = 'none')
+
+p7 <- ggplot( cell_Granulocyte_degs, aes( x = avg_log2FC, y = -log10( p_val ), 
+                                     color = avg_log2FC ) ) +
+  geom_point( ) +
+  ggtitle( label = "GSE198183: Granulocyte", subtitle = "Caerulein vs. Caerulein saline" ) +
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  labs(x = 'log2 FC',
+       y = '-log10 adj.pvalue')+
+  scale_color_gradient2( low = "#0072B5FF", high = "#BC3C29FF", 
+                         mid = "#B09C8599", midpoint = 0 ) + 
+  theme_cowplot()+
+  theme(legend.position = 'bottom')
+
+### 富集分析合并可视化，最后结合火山图一起出图
+cell_Macrophage_degs$symbol
+cell_Acinar_degs$symbol
+cell_T_cell_degs$symbol
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(enrichplot)
+library(ggplot2)
+library(GOplot)
+pFilter=0.05
+adjPfilter=0.05
+genes=cell_Macrophage_degs[cell_Macrophage_degs$p_val<0.05,'symbol']
+genes=cell_Macrophage_degs[cell_Macrophage_degs$p_val_adj<0.05,'symbol']
+
+## 直接拿gene做富集分析
+{entrezIDs=mget(genes, org.Mm.egSYMBOL2EG, ifnotfound=NA)        #找出基因对应的id
+entrezIDs=as.character(entrezIDs)
+rt=cbind(genes,entrezID=entrezIDs)
+rt=rt[is.na(rt[,"entrezID"])==F,] %>% as.data.frame() 
+rt=rt[!rt[,"entrezID"]=='NA',]
+#删掉没有基因ID的
+gene=rt$entrezID
+KEGG=enrichKEGG(gene = gene,
+                organism ='mmu',
+            pvalueCutoff =1, 
+            qvalueCutoff = 1)
+KEGG=as.data.frame(KEGG)
+KEGG=KEGG[KEGG$pvalue<pFilter,]
+KEGG=data.frame(Category =KEGG$category,ID = KEGG$ID,
+                Term = gsub("- Mus musculus \\(house mouse\\)", "", KEGG$Description), Genes = gsub("/", ", ", KEGG$geneID), 
+                Adj.pvalue = KEGG$p.adjust,RichFactor=KEGG$RichFactor,
+                Count= KEGG$Count)
+KEGG=KEGG[grepl("Cellular Processes",KEGG$Category),]
+}
+## 
+p4 <- ggplot(KEGG[1:5,],aes(RichFactor, fct_reorder(Term, RichFactor))) + 
+  geom_segment(aes(xend=0, yend = Term)) +
+  geom_point(aes(size = Count,color = Adj.pvalue)) +
+  scale_fill_manual(values = as.vector(palette.colors()))+  
+  scale_color_gradient2( low = "#B09C8599", high = "#BC3C29FF")+
+  scale_size_continuous(range=c(1, 5)) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 40))+
+  scale_x_continuous(expand = expansion(c(0, 0.1)))+
+  background_grid(major = "y", minor = "y")+
+  theme_cowplot() + 
+  xlab("Rich factor") + ylab("Terms") +
+  ggtitle(label = "Macrophage", 
+          subtitle = "KEGG enrichment analysis")+
+  theme(legend.position = 'none')
+
+## 后续接cell_Acinar_degs，cell_T_cell_degs
+genes= cell_Acinar_degs[cell_Acinar_degs$p_val<0.05,'symbol']
+{entrezIDs=mget(genes, org.Mm.egSYMBOL2EG, ifnotfound=NA)        #找出基因对应的id
+  entrezIDs=as.character(entrezIDs)
+  rt=cbind(genes,entrezID=entrezIDs)
+  rt=rt[is.na(rt[,"entrezID"])==F,] %>% as.data.frame() 
+  rt=rt[!rt[,"entrezID"]=='NA',]
+  #删掉没有基因ID的
+  gene=rt$entrezID
+  KEGG=enrichKEGG(gene = gene,
+                  organism ='mmu',
+                  pvalueCutoff =1, 
+                  qvalueCutoff = 1)
+  KEGG=as.data.frame(KEGG)
+  KEGG=KEGG[KEGG$pvalue<pFilter,]
+  KEGG=data.frame(Category =KEGG$category,ID = KEGG$ID,
+                  Term = gsub("- Mus musculus \\(house mouse\\)", "", KEGG$Description), Genes = gsub("/", ", ", KEGG$geneID), 
+                  Adj.pvalue = KEGG$p.adjust,RichFactor=KEGG$RichFactor,
+                  Count= KEGG$Count)
+  #KEGG=KEGG[grepl("Cellular Processes",KEGG$Category),]
+}
+p5 <- ggplot(KEGG[1:5,],aes(RichFactor, fct_reorder(Term, RichFactor))) + 
+  geom_segment(aes(xend=0, yend = Term)) +
+  geom_point(aes(size = Count,color = Adj.pvalue)) +
+  scale_fill_manual(values = as.vector(palette.colors()))+  
+  scale_color_gradient2( low = "#B09C8599", high = "#BC3C29FF")+
+  scale_size_continuous(range=c(1, 5)) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 40))+
+  scale_x_continuous(expand = expansion(c(0, 0.1)))+
+  background_grid(major = "y", minor = "y")+
+  theme_cowplot() + 
+  xlab("Rich factor") + ylab("Terms") +
+  ggtitle(label = "Acinar cells", 
+          subtitle = "KEGG enrichment analysis")+
+  theme(legend.position = 'none')
+
+genes= cell_T_cell_degs[cell_T_cell_degs$p_val<0.05,'symbol']
+{entrezIDs=mget(genes, org.Mm.egSYMBOL2EG, ifnotfound=NA)        #找出基因对应的id
+  entrezIDs=as.character(entrezIDs)
+  rt=cbind(genes,entrezID=entrezIDs)
+  rt=rt[is.na(rt[,"entrezID"])==F,] %>% as.data.frame() 
+  rt=rt[!rt[,"entrezID"]=='NA',]
+  #删掉没有基因ID的
+  gene=rt$entrezID
+  KEGG=enrichKEGG(gene = gene,
+                  organism ='mmu',
+                  pvalueCutoff =1, 
+                  qvalueCutoff = 1)
+  KEGG=as.data.frame(KEGG)
+  KEGG=KEGG[KEGG$pvalue<pFilter,]
+  KEGG=data.frame(Category =KEGG$category,ID = KEGG$ID,
+                  Term = gsub("- Mus musculus \\(house mouse\\)", "", KEGG$Description), Genes = gsub("/", ", ", KEGG$geneID), 
+                  Adj.pvalue = KEGG$p.adjust,RichFactor=KEGG$RichFactor,
+                  Count= KEGG$Count)
+  #KEGG=KEGG[grepl("Cellular Processes",KEGG$Category),]
+}
+p6 <- ggplot(KEGG[1:5,],aes(RichFactor, fct_reorder(Term, RichFactor))) + 
+  geom_segment(aes(xend=0, yend = Term)) +
+  geom_point(aes(size = Count,color = Adj.pvalue)) +
+  scale_fill_manual(values = as.vector(palette.colors()))+  
+  scale_color_gradient2( low = "#B09C8599", high = "#BC3C29FF")+
+  scale_size_continuous(range=c(1, 5)) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 40))+
+  scale_x_continuous(expand = expansion(c(0, 0.1)))+
+  background_grid(major = "y", minor = "y")+
+  theme_cowplot() + 
+  xlab("Rich factor") + ylab("Terms") +
+  ggtitle(label = "T cells", 
+          subtitle = "KEGG enrichment analysis")+
+  theme(legend.position = 'none')
+
+genes=cell_Granulocyte_degs[cell_Granulocyte_degs$p_val<0.05,'symbol']
+{entrezIDs=mget(genes, org.Mm.egSYMBOL2EG, ifnotfound=NA)        #找出基因对应的id
+  entrezIDs=as.character(entrezIDs)
+  rt=cbind(genes,entrezID=entrezIDs)
+  rt=rt[is.na(rt[,"entrezID"])==F,] %>% as.data.frame() 
+  rt=rt[!rt[,"entrezID"]=='NA',]
+  #删掉没有基因ID的
+  gene=rt$entrezID
+  KEGG=enrichKEGG(gene = gene,
+                  organism ='mmu',
+                  pvalueCutoff =1, 
+                  qvalueCutoff = 1)
+  KEGG=as.data.frame(KEGG)
+  KEGG=KEGG[KEGG$pvalue<pFilter,]
+  KEGG=data.frame(Category =KEGG$category,ID = KEGG$ID,
+                  Term = gsub("- Mus musculus \\(house mouse\\)", "", KEGG$Description), Genes = gsub("/", ", ", KEGG$geneID), 
+                  Adj.pvalue = KEGG$p.adjust,RichFactor=KEGG$RichFactor,
+                  Count= KEGG$Count)
+  #KEGG=KEGG[grepl("Cellular Processes",KEGG$Category),]
+}
+p8 <- ggplot(KEGG[1:5,],aes(RichFactor, fct_reorder(Term, RichFactor))) + 
+  geom_segment(aes(xend=0, yend = Term)) +
+  geom_point(aes(size = Count,color = Adj.pvalue)) +
+  scale_fill_manual(values = as.vector(palette.colors()))+  
+  scale_color_gradient2( low = "#B09C8599", high = "#BC3C29FF")+
+  scale_size_continuous(range=c(1, 5)) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 40))+
+  scale_x_continuous(expand = expansion(c(0, 0.1)))+
+  background_grid(major = "y", minor = "y")+
+  theme_cowplot() + 
+  xlab("Rich factor") + ylab("Terms") +
+  ggtitle(label = "Granulocyte", 
+          subtitle = "KEGG enrichment analysis")+
+  theme(legend.position = 'bottom')
+
+((p2/p1/p3/p7) | (p5/p4/p6/p8) ) 
+
+ggsave(filename = "GSE198564细胞内的差异基因分析.pdf", 
+       width = 9, height = 13,
+       dpi = 200)
+
+save( sc_int, file = "3.3注释后.rda" ) # 有一些重要变化时，及时保存数据
+
+degs_temp <- degs_temp[degs_temp$P.Value<0.05,]
+
+cell_Macrophage_degs <- cell_Macrophage_degs[cell_Macrophage_degs$p_val<0.05&cell_Macrophage_degs$avg_log2FC>1,]
+cell_T_cell_degs <- cell_T_cell_degs[cell_T_cell_degs$p_val<0.05&cell_T_cell_degs$avg_log2FC>1,]
+cell_Acinar_degs <- cell_Acinar_degs[cell_Acinar_degs$p_val<0.05&cell_Acinar_degs$avg_log2FC>1,]
+cell_Granulocyte_degs <- cell_Granulocyte_degs[cell_Granulocyte_degs$p_val<0.05&cell_Granulocyte_degs$avg_log2FC>1,]
+
+intersect(degs_temp$row,cell_Granulocyte_degs$symbol)
+intersect(degs_temp$row,cell_Macrophage_degs$symbol)
+intersect(degs_temp$row,cell_T_cell_degs$symbol)
+intersect(degs_temp$row,cell_Acinar_degs$symbol)
+
+
+intersect(cell_Macrophage_degs$symbol,cell_Granulocyte_degs$symbol)
+
+### 基因表达作图
+cell_T_cell_degs$symbol[1:10]
+genexx = c("Lrg1")
+# c、小提琴图
+VlnPlot( sc_int, features = genexx)
+
+VlnPlot( sc_int, features = genexx, 
+  cols = c("olivedrab", "salmon"),
+  pt.size = 0,
+  alpha = 0.7,
+  group.by = "cell_type",
+  split.plot = TRUE,
+  split.by = "group" 
+  )
+
+#
+VlnPlot( 
+  sc_int, features = genexx, 
+  group.by = "cell_type",
+  stack = T,
+  flip = T
+) +
+  scale_fill_igv() # ggsci
+
+#单基因UMAP图
+FeaturePlot( 
+  sc_int,
+  features = genexx,
+  reduction = "umap", 
+  order = T, # 重要参数，是否让高表达细胞叠加在最顶层
+  #cols = c("grey", "brown"),
+  ncol = 1
+)+ggtitle( label = "GSE198183 Lrg1 mRNA expression", subtitle = " UMAP plot" ) +
+  theme(
+    plot.title = element_text( face = "bold", hjust = 0.5),
+    plot.background = element_rect(fill = "transparent",colour = NA)
+  ) +
+  labs(x = 'UMAP1',
+       y = 'UMAP2')+
+  scale_color_gradient2( low = "#0072B5FF", high = "#BC3C29FF", 
+                         mid = "#B09C8599", midpoint = 0 ) + 
+  theme_cowplot()+
+  theme(legend.position = 'bottom')
+
+ggsave('Lrg1_umap.pdf',width = 5,height = 4,units = 'in')
+
+
+#
+FeaturePlot( 
+  sc_int,
+  features = genexx,
+  reduction = "umap", 
+  cols = c("olivedrab", "orangered"),
+  split.by = "group", 
+)
+
+
+
+
+## 5 其他进阶分析（未完待续）----
+# 富集分析，同Bulk测序：clusterProfiler、GSEA、UCell等
+# 细胞通讯：CellChat
+# 拟时序：monocle3
+# 代谢分析：scFEA（compass目前安装失败，没时间Debug）
+# 转录因子预测：SCENIC
+
+
+
+
+## 6、作图和美化（美没有上限，不建议新手阶段花过多时间调图）----
+
+
+
+
