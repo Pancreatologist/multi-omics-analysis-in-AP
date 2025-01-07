@@ -1,0 +1,492 @@
+library(readxl)
+library(ComplexHeatmap)
+library(CATALYST)
+library(diffcyt)
+library(ggpubr)
+library(aplot)
+library(cowplot)
+library(flowCore)
+library(SummarizedExperiment)
+library(SingleCellExperiment)
+#library(openCyto)
+#library(CytoML)
+library(FlowSOM)
+library(remotes)
+#library(CytoNorm)
+#library(flowAI)
+#library(flowCut)
+#library(cytutils)
+#library("cytofclean")
+library(uwot)
+library(tidyverse)
+library(RColorBrewer)
+library(ggpubr)
+#library(flowWorkspace)
+library(pals)
+library(scales)
+#library(CytoQP)
+library(pheatmap)
+library("FRACTION")
+#library(immunoCluster)
+library(stringr)
+library(cowplot)
+library(RColorBrewer)
+library(ggsci)
+library(tidyHeatmap)
+ls()
+rm()
+gc()
+md <- read_excel('APmodel_metadata.xlsx')
+panel <- read_excel('PBMC_panel.xlsx')
+# specify levels for conditions & sample IDs to assure desired ordering
+md$condition <- factor(md$condition, levels = c("Control","CER-AP"
+                                                ))
+md$sample_id <- factor(md$sample_id, 
+                       levels = md$sample_id[order(md$condition)])
+rownames(md) <- md$file_name
+
+
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072*10 ) # 读取文件报错时，提高缓存大小
+p1='D:/APmodel_cyTOF/rawdata'
+fs1=list.files(p1,'*fcs')
+fs <- read.flowSet(files = fs1,path = p1)
+
+all(panel$fcs_colname %in% colnames(fs))
+
+# construct SingleCellExperiment
+sce <- prepData(fs, panel, md,features = panel$fcs_colname)
+
+##subgroup of cell type (去掉红细胞)
+y <- assay(sce, "exprs") # get expression matrix
+summary(y["CD45", ] )
+hist(y["CD45", ] )
+i <- y["CD45", ] >= 4.5 # find cells with CD45 expression of at least 0.1
+sce <- sce[, i] # subset the object
+n_cells(sce)
+
+
+# for proportional sampling (fixed number of cells in total)
+cs <- split(seq_len(ncol(sce)), sce$sample_id)
+cs <- lapply(cs, function(u) sample(u, min(65000, length(u))))###down sample to 75000
+sub_sce <- sce[, unlist(cs)]
+
+# Diagnostic plots
+p <- plotExprs(sub_sce, color_by = "condition")+ scale_color_nejm()
+p$facet$params$ncol <- 14
+n_cells(sub_sce)
+ggsave(p,filename = "Diagnostic plots.pdf",limitsize = F,width =15 ,height = 5)
+
+
+MDS <- pbMDS(sub_sce, color_by = "condition",label_by = 'patient_id',
+             k = "merge1")+
+  theme_cowplot() 
+ggsave(MDS ,filename = "MDS.pdf",width = 5,height = 5)
+mycol3 <-rep(c("#223D6C","#D20A13","#FFD121","#088247","#431A3D",'#6E568C',"#7A142C","#11AA4D","#58CDD9","#7A142C","#5D90BA","#029149","#91612D",'#E0367A',"#D8D155","#64495D","#7CC767","#223D6C","#D20A13","#FFD121","#088247","#11AA4D","#58CDD9","#7A142C","#5D90BA","#029149","#431A3D","#91612D","#6E568C","#E0367A","#D8D155","#64495D","#7CC767","#223D6C","#D20A13","#FFD121","#088247","#11AA4D","#58CDD9","#7A142C","#5D90BA","#029149","#431A3D","#91612D","#223D6C","#D20A13","#FFD121","#088247","#11AA4D","#58CDD9","#7A142C","#5D90BA","#029149","#431A3D","#91612D","#6E568C","#E0367A","#D8D155","#64495D","#7CC767","#223D6C","#D20A13","#FFD121","#088247","#11AA4D","#58CDD9","#7A142C","#5D90BA","#029149","#431A3D","#91612D","#6E568C","#E0367A","#D8D155","#64495D","#7CC767"),3)
+
+ExprHeatmap <- plotExprHeatmap(sub_sce, scale = "last",
+                               row_anno=F, hm_pal = rev(hcl.colors(10, "YlGnBu")))
+pdf(file="ExprHeatmap.pdf")
+draw(ExprHeatmap)
+dev.off()
+NRS <- plotNRS(sub_sce, color_by = "condition")+
+  theme_cowplot(8)+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                          axis.text = element_text(color = "black",size = 12))
+
+ggsave(NRS ,filename = "NRS.pdf",width = 6,height = 5)
+
+# run t-SNE/UMAP on at most 500/1000 cells per sample
+set.seed(666)
+sub_sce <- cluster(sub_sce, features = "type",
+                   xdim = 50, ydim = 50, maxK = 40, seed = 666)
+ExprHeatmap_tSNE <- plotExprHeatmap(sub_sce, features = "type",scale = 'last',#or last
+                                    by = "cluster_id", k = "meta40", 
+                                    bars = TRUE, perc = TRUE,
+                                    k_pal=unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_jama("default")(7))))
+
+pdf(file="ExprHeatmap_sub_sce for cluster.pdf")
+draw(ExprHeatmap_tSNE)
+dev.off()
+rm(ExprHeatmap_tSNE)
+gc()
+
+
+ExprHeatmap_tSNE <- plotExprHeatmap(sub_sce, features = "type",scale = 'never',#or last
+                                    by = "cluster_id", k = "meta40", 
+                                    bars = TRUE, perc = TRUE,
+                                    k_pal=unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_jama("default")(7))))
+
+pdf(file="ExprHeatmap_sub_sce expression.pdf")
+draw(ExprHeatmap_tSNE)
+dev.off()
+rm(ExprHeatmap_tSNE)
+gc()
+
+
+#ClusterExprs <- plotClusterExprs(sce, k = "meta30", features = "type")
+sub_sce <- runDR(sub_sce, "TSNE", cells = 1000, features = "type")
+sub_sce <- runDR(sub_sce, "UMAP", cells = 1000, features = "type")
+arr <- list(x = -40, y = -40, x_len = 5, y_len = 5)
+p1 <- plotDR(sub_sce, "TSNE", color_by = "meta40", facet_by = "condition")+theme_cowplot(10)
+ggsave('TSNE_condition sub_sce.pdf',p1,limitsize = F)
+p2 <- plotDR(sub_sce, "TSNE", color_by = "meta40", facet_by = "sample_id")+theme_cowplot(10)
+ggsave('TSNE_sample sub_sce.pdf',p2,limitsize = F)
+p3 <- plotDR(sub_sce, "UMAP", color_by = "meta40", facet_by = "condition") +theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_locuszoom("default")(7),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('UMAP_condition sub_sce.pdf',p3,limitsize = F)
+p4 <- plotDR(sub_sce, "UMAP", color_by = "meta40", facet_by = "sample_id")+theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_locuszoom("default")(7),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('UMAP_sample sub_sce.pdf',p4,limitsize = F)
+
+p5 <- plotDR(sub_sce, "TSNE", color_by = "meta40")+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),
+                                       pal_locuszoom("default")(7),pal_bmj("default")(9),
+                                       pal_uchicago("default")(9),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('TSNE sub_sce.pdf',p5,limitsize = F)
+
+
+
+library(patchwork)
+
+DR <- plotDR(sub_sce, dr = "TSNE",
+             color_by = rownames(sub_sce), ncol = 4, 
+       a_pal = rev(hcl.colors(10, "Spectral")))+
+  theme_cowplot()+
+  scale_x_continuous(breaks = NULL) +
+  scale_y_continuous(breaks = NULL)
+ggsave('DR sub_sce.jpg',DR,limitsize = T,height = 7,width = 7)
+
+
+plotCodes(sub_sce, k = "meta40")+
+  theme_cowplot(8)
+
+MultiHeatmap= plotMultiHeatmap(sub_sce, 
+                               hm1 = "type", k = "meta40", 
+                               row_anno = FALSE, bars = TRUE, perc = TRUE)
+pdf(file="MultiHeatmap sub_sce.pdf",width=16,height=6)
+draw(MultiHeatmap)
+dev.off()
+
+#save(sub_sce, file = "date_sub_sce.rdata" )
+### anonotaion for clusters
+#load("date_sub_sce.rdata")
+### 注释细胞
+merging_table1 <- read_excel('PBMC8_cluster_merging1.xlsx')
+head(data.frame(merging_table1))
+merging_table1$new_cluster <- factor(merging_table1$new_cluster,  
+                                     levels = unique(merging_table1$new_cluster))
+                                     
+merging_table1$new_cluster 
+
+
+sub_sce <- mergeClusters(sub_sce, k = "meta40", 
+                     table = merging_table1, id = "merging1",overwrite = TRUE)
+
+TSNE_anno <- plotDR(sub_sce, "TSNE", color_by = "merging1",facet_by = "condition")+theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('TSNE_anno sub_sce.pdf',TSNE_anno,limitsize = F,width = 11,height = 5)
+UMAP_anno <- plotDR(sub_sce, "UMAP",color_by = "merging1", facet_by = "condition")+theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('UMAP_anno sub_sce.pdf',UMAP_anno,limitsize = F,width = 11,height = 5)
+
+
+#final summary of the annotated cell types
+ExprHeatmap_merging1<- plotExprHeatmap(sub_sce, features = "type",
+                                       by = "cluster_id", k = "merging1")
+pdf(file="ExprHeatmap_merging1 sub_sce.pdf",width=6,height=5)
+draw(ExprHeatmap_merging1)
+dev.off()
+
+
+p1 <- plotDR(sub_sce, "TSNE", color_by = "merging1", facet_by = "condition")+theme_cowplot(10)
+ggsave('TSNE_condition_anno sub_sce.pdf',p1,limitsize = F,width=9,height=5)
+p2 <- plotDR(sub_sce, "TSNE", color_by = "merging1", facet_by = "sample_id")+theme_cowplot(10)
+ggsave('TSNE_sample_anno sub_sce.pdf',p2,limitsize = F,width=9,height=5)+theme_cowplot(10)
+p3 <- plotDR(sub_sce, "UMAP", color_by = "merging1", facet_by = "condition")+theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),
+                                       pal_locuszoom("default")(7),pal_bmj("default")(9),
+                                       pal_uchicago("default")(9),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('UMAP_condition_anno sub_sce.pdf',p3,limitsize = F,width=9,height=5)
+p4 <- plotDR(sub_sce, "UMAP", color_by = "merging1", facet_by = "sample_id")+theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),
+                                       pal_locuszoom("default")(7),pal_bmj("default")(9),
+                                       pal_uchicago("default")(9),pal_jama("default")(7))))+ theme_cowplot()
+ggsave('UMAP_sample_anno sub_sce.pdf',p4,limitsize = F,width=9,height=5)
+
+
+###Comparison of automated and manual merging
+Comparison_of_merging <- plot_grid(plotDR(sub_sce, "TSNE", color_by = "merging1")+theme_cowplot(10),
+                                   plotDR(sub_sce, "TSNE", color_by = "meta40",k_pal=unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),
+                                                                                          pal_locuszoom("default")(7),pal_bmj("default")(9),
+                                                                                          pal_uchicago("default")(9),pal_jama("default")(7))))+theme_cowplot(10))
+
+ggsave('Comparison_of_merging sub_sce TSNE.pdf',Comparison_of_merging,limitsize = F, width = 14,height = 7)
+
+
+annontaion <- plotDR(sub_sce, "TSNE", color_by = "merging1")+theme_cowplot(10)+
+  scale_color_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),pal_uchicago("default")(9),pal_jama("default")(7))))+ theme_cowplot()
+
+ggsave('annontaion sub_sce TSNE.pdf', annontaion,limitsize = F)
+###Differential analysis
+FDR_cutoff <- 0.05
+#plotAbundances(sce, k = "merging1")
+tmp <- plotAbundances(sub_sce, k = "merging1", by = "cluster_id")
+
+ggplot(tmp$data, aes(fill=cluster_id, y=Freq, x=condition)) + 
+  geom_bar(position="fill", stat="identity")+
+  scale_fill_manual(values = unique(c(pal_npg("nrc")(10),pal_nejm("default")(8),
+                                       pal_uchicago("default")(9),pal_jama("default")(7))))+
+  theme_cowplot()
+
+ggsave('PBMCs.pdf',limitsize = F,width = 10,height = 10)
+
+p <- plotAbundances(sub_sce, k = "merging1", by = "cluster_id",
+                    shape_by = 'sample_id')+
+  scale_fill_nejm()+
+  scale_color_nejm()+theme_cowplot(8)+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                             axis.text = element_text(color = "black",size = 10)) 
+p$facet$params$ncol <- 5
+p
+ggsave('proportion.pdf',p,limitsize = F,width = 10,height = 7)
+
+plotAbundances(sub_sce, k = "meta40", by = "cluster_id",
+               shape_by = 'sample_id')+
+  scale_fill_nejm()+
+  scale_color_nejm()+theme_cowplot(8)+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                            axis.text = element_text(color = "black",size = 10)) 
+
+###
+ei <- metadata(sub_sce)$experiment_info
+(da_formula1 <- createFormula(ei, 
+                              cols_fixed = "condition", 
+                              cols_random = "sample_id"))
+(da_formula1 <- createFormula(ei, 
+                              cols_fixed = "condition", 
+                              cols_random = "sample_id"))
+contrast <- createContrast(c(0, 1))
+da_res1 <- diffcyt(sub_sce, 
+                   formula = da_formula1, contrast = contrast,
+                   analysis_type = "DA", method_DA = "diffcyt-DA-GLMM",
+                   clustering_to_use = "merging1", verbose = FALSE)
+rowData(da_res1$res) 
+table(rowData(da_res1$res)$p_adj < FDR_cutoff)
+topTable(da_res1, show_props = TRUE, format_vals = TRUE, digits = 2)
+da_heatmap <- plotDiffHeatmap(sub_sce, rowData(da_res1$res), all = TRUE, fdr = FDR_cutoff)
+da_heatmap
+pdf(file="DA分析已注释的细胞.pdf",width = 5,height = 2.5)
+draw(da_heatmap)
+dev.off()
+rm(da_heatmap)
+gc()
+
+
+DA_tidy <- 
+  topTable(da_res1, show_props = TRUE, format_vals = TRUE, digits = 2) |> 
+  as.tibble()|> 
+  # Scale
+  mutate_at(vars(-`cluster_id`, -p_val, -p_adj), scale) |>
+  # tidyfy
+  pivot_longer(cols = -c(`cluster_id`, p_val, p_adj), names_to = "Property", values_to = "Value")|>
+  mutate(Group = ifelse(grepl('Con',Property),'Control','CER-AP'))|>
+  mutate(SampleID = gsub('props_','',Property))|>
+  mutate(Group = factor(ifelse(grepl('Con',Property),'Control','CER-AP'), level=c('Control','CER-AP')))
+
+DA_heatmap <- 
+  DA_tidy |>
+  group_by(Group) |>
+  heatmap(`cluster_id`, SampleID, Value,scale = 'row', 
+          palette_grouping = list(c("#b58b4c", "#74a6aa")),
+          palette_value = c("#21908CFF","#fefada","#440154FF"  )) |>
+  layer_text(SampleID == "CER1", 
+             .value = p_adj, 
+             .size = 10)|>
+  wrap_heatmap() +
+  ggplot2::ggtitle("Differential cell population abundance")
+DA_heatmap
+
+
+
+
+
+### Differential analysis of marker expression stratified by cell population
+p <- plotPbExprs(sub_sce, k = "merging1", fun = "mean",
+                 facet_by = "cluster_id", shape_by = "patient_id")+theme_cowplot(8)+
+  geom_signif(comparisons = list(c("Control", "CER-AP")),
+              map_signif_level = T,
+              #y_position = c(4, 5),
+              col = 2, test= 't.test',
+              size = 1,
+              textsize = 3)+scale_color_nejm()+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                                     axis.text = element_text(color = "black",size = 10))
+p$facet$params$ncol <- 2
+p
+
+p$data
+
+ggsave('marker的总体表达情况.pdf',p,limitsize = F,width=10,height=7)
+ggsave('marker的总体表达情况.jpg',p,limitsize = F,width=10,height=7)
+P1 <- ggplot(p$data[p$data$cluster_id %in% 'Tregs',], aes(fill=condition, y=value, x=antigen)) +
+  geom_boxplot()+
+  scale_fill_nejm()+
+  stat_compare_means(aes(group = condition,label = ..p.signif..),
+                     method = "t.test",label.y = 4.5,col=2, show.legend = FALSE)+
+  theme(panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        panel.background = element_blank(),  
+        axis.line = element_line(color = "black"))+ 
+  theme(legend.position = "bottom")+
+  theme_cowplot(10)+
+  labs(x = 'Immune checkpoint', y = "Expression") +
+  theme(axis.text.x = element_text(angle=45,hjust = 1),
+        axis.text = element_text(color = "black",size = 12))+
+  ggtitle('CyTOF analysis on whole blood in CER-AP model',
+          subtitle = 'Antigen expression of Treg cells ')+
+  theme(
+    plot.title = element_text( hjust = 0.5, vjust = 0, # 调整注标题位置，hjust：horizontal/横向位置调整，vjust：vertical/纵向
+                               color = "brown", # 颜色
+                               size = 12, # 字体大小
+                               family = "", # 调整字体类型
+                               face = "bold",  ), # 调整字形，可选："plain"、"bold"、"italic"、"bold.italic"
+    plot.subtitle = element_text( hjust = 0.5,
+                                  color = "olivedrab",
+                                  size = 10,
+                                  face = "bold.italic"
+    ),
+    axis.text.y = element_text( size = 10, # 字体大小。注意：各种属性可以指定一个值整体设置，也可以像后面2条一样分别设置
+                                face = c( rep( "italic", 15), rep( "bold.italic", 5 ) ), # 字形
+                                color = c( rep( "black", 15), rep( "orange3", 5 ) ) # 颜色
+    ))+scale_color_nejm()+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                axis.text = element_text(color = "black",size = 10))
+P1
+ggsave('marker的Tregs表达情况.pdf',P1,limitsize = F,width=3.75,height=4)
+
+
+P2 <- ggplot(p$data[p$data$antigen %in% 'PD-L1',], aes(fill=condition, y=value, x=cluster_id)) +
+  geom_boxplot()+
+  scale_fill_nejm()+
+  stat_compare_means(aes(group = condition,label = ..p.signif..),label.y = 6,show.legend = FALSE,
+                     col = 2, test= 't.test')+
+  theme(panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        panel.background = element_blank(),  
+        axis.line = element_line(color = "black"))+ 
+  theme(legend.position = "bottom")+
+  theme_cowplot(10)+
+  labs(x = 'Celltypes', y = "Expression") +
+  theme(axis.text.x = element_text(angle=45,hjust = 1),
+        axis.text = element_text(color = "black",size = 12))+
+  ggtitle('CyTOF analysis on whole blood in CER-AP model',
+          subtitle = 'PD-L1 expression of each cell types ')+
+  theme(
+    plot.title = element_text( hjust = 0.5, vjust = 0, # 调整注标题位置，hjust：horizontal/横向位置调整，vjust：vertical/纵向
+                               color = "brown", # 颜色
+                               size = 12, # 字体大小
+                               family = "", # 调整字体类型
+                               face = "bold",  ), # 调整字形，可选："plain"、"bold"、"italic"、"bold.italic"
+    plot.subtitle = element_text( hjust = 0.5,
+                                  color = "olivedrab",
+                                  size = 10,
+                                  face = "bold.italic"
+    ),
+    axis.text.y = element_text( size = 10, # 字体大小。注意：各种属性可以指定一个值整体设置，也可以像后面2条一样分别设置
+                                face = c( rep( "italic", 15), rep( "bold.italic", 5 ) ), # 字形
+                                color = c( rep( "black", 15), rep( "orange3", 5 ) ) # 颜色
+    ))+scale_color_nejm()+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                axis.text = element_text(color = "black",size = 10))
+P2
+ggsave('PD-L1的表达的细胞分群的情况.pdf',P2,limitsize = F,width=3.75,height=4)
+
+
+
+ds_formula1 <- createFormula(ei, cols_fixed = "condition")
+ds_res1 <- diffcyt(sub_sce, 
+                   formula = ds_formula1, contrast = contrast,
+                   analysis_type = "DS", method_DS = "diffcyt-DS-LMM",
+                   clustering_to_use = "merging1", verbose = FALSE)
+
+table(rowData(ds_res1$res)$p_val < FDR_cutoff)
+DS_subtypecells <- rowData(ds_res1$res) %>% as.data.frame()
+writexl::write_xlsx(DS_subtypecells,'DS_subtypecells.xlsx')
+topTable(ds_res1, show_props = TRUE,order_by = "p_val", format_vals = TRUE, digits = 2)
+plotDiffHeatmap(sub_sce, rowData(ds_res1$res), sort_by = "none",all = TRUE)
+
+DS_tidy <- 
+  topTable(ds_res1, show_props = TRUE, format_vals = TRUE,top_n = 10, digits = 2) |> 
+  as.tibble()|> 
+  # Scale
+  mutate_at(vars(-`cluster_id`,-marker_id, -p_val, -p_adj), scale) |>
+  # tidyfy
+  pivot_longer(cols = -c(`cluster_id`,marker_id, p_val, p_adj), names_to = "Property", values_to = "Value")|>
+  mutate(SampleID = gsub('props_','',Property))|>
+  mutate(Group = factor(ifelse(grepl('Con',Property),'Control','CER-AP'), level=c('Control','CER-AP')))
+
+
+
+
+DS_heatmap
+# Differential analysis of overall marker expression
+sub_sce <- mergeClusters(sub_sce, k = "meta40", id = "merging_all",
+                     table = data.frame(old_cluster = seq_len(40), new_cluster = "all"),overwrite = TRUE)
+
+p <- plotPbExprs(sub_sce, features = "state", k = "merging_all",
+                 fun = "mean",
+                 shape_by = "patient_id") +
+  geom_signif(comparisons = list(c("Control", "CER-AP")),
+                                                      map_signif_level = T,
+                                                      #y_position = c(4, 5),
+                                                      col = 2, test= 't.test',
+                                                      size = 1,
+                                                      textsize = 3)+
+  theme_cowplot(10)+scale_color_nejm()+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                             axis.text = element_text(color = "black",size = 10))
+p$facet$params$ncol <- 6
+
+p0 <- ggplot(p$data, aes(fill=condition, y=value, x=antigen)) +
+  geom_boxplot()+
+  scale_fill_nejm()+
+  stat_compare_means(aes(group = condition,label = ..p.signif..),
+                     method = "t.test",label.y = 4.5,col=2,show.legend = FALSE)+
+  theme(panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        panel.background = element_blank(),  
+        axis.line = element_line(color = "black"))+ 
+  theme(legend.position = "bottom")+
+  theme_cowplot(10)+
+  labs(x = 'Immune checkpoint', y = "Expression") +
+  theme(axis.text.x = element_text(angle=45,hjust = 1),
+        axis.text = element_text(color = "black",size = 12))+
+  ggtitle('CyTOF analysis on whole blood in CER-AP model',
+          subtitle = 'Antigen expression at sample level ')+
+  theme(
+    plot.title = element_text( hjust = 0.5, vjust = 0, # 调整注标题位置，hjust：horizontal/横向位置调整，vjust：vertical/纵向
+                               color = "brown", # 颜色
+                               size = 12, # 字体大小
+                               family = "", # 调整字体类型
+                               face = "bold",  ), # 调整字形，可选："plain"、"bold"、"italic"、"bold.italic"
+    plot.subtitle = element_text( hjust = 0.5,
+                                  color = "olivedrab",
+                                  size = 10,
+                                  face = "bold.italic"
+    ),
+    axis.text.y = element_text( size = 10, # 字体大小。注意：各种属性可以指定一个值整体设置，也可以像后面2条一样分别设置
+                                face = c( rep( "italic", 15), rep( "bold.italic", 5 ) ), # 字形
+                                color = c( rep( "black", 15), rep( "orange3", 5 ) ) # 颜色
+    ))+scale_color_nejm()+theme(axis.text.x = element_text(angle=45,hjust = 1),
+                                axis.text = element_text(color = "black",size = 10))
+
+p0
+ggsave('allmarkergenes in sample level.pdf',p0,width = 3.75,height = 4)
+
+# fit linear model
+ds_formula1 <- createFormula(ei, cols_fixed = "condition")
+ds_res3 <- diffcyt(sub_sce, 
+                   design = createDesignMatrix(ei, cols_design = 'condition'),
+                   formula = ds_formula1, 
+                   contrast = contrast,
+                   analysis_type = "DS", method_DS = "diffcyt-DS-limma",
+                   clustering_to_use = "merging_all", verbose = FALSE)
+
+table(rowData(ds_res3$res)$p_val < FDR_cutoff)
+topTable(ds_res3, show_props = TRUE,order_by = "p_val", format_vals = TRUE, digits = 2)
+
+
