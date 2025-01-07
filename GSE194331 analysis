@@ -1,0 +1,193 @@
+#读取GEO数据库进行验证
+library(edgeR)
+library(DESeq2)
+library(tidyverse)
+count_data <- read.table(gzfile("GSE194331_HC_PAN_PANSEP_counts.txt.gz"), header = TRUE, row.names = 1) %>% as.data.frame()
+count_data  <- count_data [!rownames(count_data)%in% c('ENSG00000206172', 'ENSG00000188536','ENSG00000244734', 'ENSG00000223609', 'ENSG00000213934', 'ENSG00000196565'),!colnames(count_data) %in% "PANWES003"]
+sample_metadata <- read.delim2('sampleinfo.txt') %>% as.data.frame() 
+sample_metadata$Sample.ID <- gsub("-", ".", sample_metadata$Sample.ID)
+sample_metadata <- sample_metadata[!sample_metadata$Sample.ID=="PANWES003",]
+table(colnames(count_data)==sample_metadata$Sample.ID)
+
+sample_metadata$Group <-  ifelse(sample_metadata$Group== 'Healthy control','HC', 'AP')
+sample_metadata$Group <- factor(sample_metadata$Group,levels = c('HC', 'AP'))
+
+dds <- DESeqDataSetFromMatrix(countData = count_data,
+                              colData = sample_metadata,
+                              design = ~Group)
+dds
+
+featureData <- data.frame(gene=rownames(count_data))
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+###Pre-filtering
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+
+###Note on factor levels
+dds$Group <- relevel(dds$Group, ref = "HC")
+dds <- DESeq(dds)
+res <- results(dds)
+res
+resultsNames(dds)
+sum(res$padj < 0.05, na.rm=TRUE)
+res05 <- results(dds, alpha=0.05)
+summary(res05)
+
+
+###差异基因列表输出
+library(DT)
+updn_cols <- c(RColorBrewer::brewer.pal(6, 'Greens')[2], RColorBrewer::brewer.pal(6, 'Purples')[2])
+res05 %>% as.data.frame() %>% 
+  dplyr::select(c("log2FoldChange", "baseMean", "pvalue", "padj")) %>%
+  DT::datatable(caption = 'DE genes between HC and AP patients (GSE194331)') %>%
+  DT::formatStyle('log2FoldChange',
+                  valueColumns = 'log2FoldChange',
+                  backgroundColor = DT::styleInterval(0, rev(updn_cols))) %>%
+  DT::formatSignif(1:4, digits = 4)
+
+### 富集分析
+res05 <- res05[res05$padj < 0.05,]
+library(clusterProfiler)
+kegg_genes <- bitr(rownames(res05),fromType = 'ENSEMBL',
+                   toType = 'ENTREZID',
+                   OrgDb = 'org.Hs.eg.db')
+res05 <- res05[kegg_genes$ENSEMBL,] %>% as.data.frame() %>% 
+  mutate(ENTREZID=kegg_genes$ENTREZID)
+
+kegg_data <- enrichKEGG(gene = res05$ENTREZID, 
+                        keyType = "kegg",
+                        organism   = 'hsa', # 种属设置
+                        #pvalueCutoff = 1, # 设置1意味着不筛选，保留所有结果，可以在后续处理中筛选
+                        qvalueCutoff = 0.05 ) %>% # 是否使用本地数据，默认 F 
+  setReadable( ., OrgDb = 'org.Hs.eg.db', keyType = 'ENTREZID')  
+
+kegg_data <- kegg_data@result[kegg_data@result$category == "Human Diseases",]
+kegg_data <- kegg_data[!is.na(kegg_data$Description),]
+kegg_data <- kegg_data[order(kegg_data$RichFactor,decreasing =T),]
+
+p2 <- ggplot( kegg_data[1:20,], aes( x = RichFactor, # 设置 x 对应的属性
+                         y =  reorder(Description,RichFactor), # y 对应的属性
+                         size = Count, # 气泡大小属性
+                         color = -log10(p.adjust), # 颜色对应的属性
+) ) +
+  geom_point()+
+  ggtitle( label = "KEGG analysis on GSE194331 dataset", subtitle = "DE genes between HC and AP patients" ) +
+  theme_cowplot(8) + # 更换全局主题，如 theme_bw()、theme_light()、theme_minimal()、theme_dark()等
+  theme(
+    plot.title = element_text( hjust = 0, vjust = 0, # 调整注标题位置，hjust：horizontal/横向位置调整，vjust：vertical/纵向
+                               color = "brown", # 颜色
+                               size = 15, # 字体大小
+                               family = "", # 调整字体类型
+                               face = "bold",  ), # 调整字形，可选："plain"、"bold"、"italic"、"bold.italic"
+    plot.subtitle = element_text( hjust = 0,
+                                  color = "olivedrab",
+                                  size = 12,
+                                  face = "bold.italic"
+    ),
+    axis.text.y = element_text( size = 10, # 字体大小。注意：各种属性可以指定一个值整体设置，也可以像后面2条一样分别设置
+                                face = c( rep( "italic", 15), rep( "bold.italic", 5 ) ), # 字形
+                                color = c( rep( "black", 15), rep( "orange3", 5 ) ) # 颜色
+    ),
+    # legend.position = c(0.7, 0.3), # 调整legend 的相对xy轴的位置
+    # legend.position = "bottom" # 调整legend 在整个图片的位置，和上面的调整方式选其一
+  ) +
+  scale_color_gradient( "-log10(adj.p value)", breaks = c( 5, 10 ), # 设置legend（图例）的显示
+                        low = "olivedrab", high = "orange" ) + # 调整散点颜色
+  scale_size_continuous( breaks = c( 5, 10), # 设置legend（图例）的显示
+                         range = c(2,6) ) +  # 设置散点大小范围
+  scale_y_discrete( position = "right" ) +
+  labs(x = 'Rich factor', y = "Top 20 terms") +
+  theme(legend.position = 'bottom')
+p2
+ggsave('KEGG_GSE194331.pdf',p2,width = 6,height = 5)
+
+#special genes
+vsd_data <- vst(dds, blind=FALSE)
+vsd_data <- assay(vsd_data)
+
+symbol_genes <- bitr(rownames(vsd_data),fromType = 'ENSEMBL',
+                   toType = 'SYMBOL',
+                   OrgDb = 'org.Hs.eg.db')
+symbol_genes <- symbol_genes[!duplicated(symbol_genes$SYMBOL),]
+symbolid_data <- vsd_data[symbol_genes$ENSEMBL,]
+rownames(symbolid_data) <- symbol_genes$SYMBOL
+#rownames(symbolid_data)[grepl('PDCD',rownames(symbolid_data))]
+genename <- c("PDCD1","PDCD2","PDCD4","PDCD5",
+              "PDCD7","PDCD10","PDCD11",    
+              "PDCD1LG2","PDCD2L")
+
+gene_expr_box <- symbolid_data[genename,]
+target_info <- sample_metadata
+
+colnames(gene_expr_box)==target_info$Sample.ID
+colnames(gene_expr_box) <-  target_info$Group
+
+gene_expr_long <- reshape2::melt(gene_expr_box, id.vars = "Gene", variable.name = "Group", value.name = "Expression")   
+head(gene_expr_long)
+library(ggpubr)
+library(cowplot)
+library(ggsci)
+p3 <- ggplot(gene_expr_long, aes(x=Var1, y=Expression, color=Var2)) +
+  geom_boxplot()+
+  scale_color_lancet(alpha = 0.6)+
+  theme(axis.text.x = element_text(angle=45,hjust = 1),
+        axis.text = element_text(color = "black",size = 12))+
+  stat_compare_means(aes(group = Var2,label = ..p.signif..),
+                     method = "kruskal.test",label.y = 12,show.legend = FALSE)+
+  theme(panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        panel.background = element_blank(),  
+        axis.line = element_line(color = "black"))+ 
+  ggtitle( label = "PD-1 related gene in GSE194331 dataset") +
+  theme_cowplot(8) + # 更换全局主题，如 theme_bw()、theme_light()、theme_minimal()、theme_dark()等
+  theme(
+    plot.title = element_text( hjust = 0, vjust = 0, # 调整注标题位置，hjust：horizontal/横向位置调整，vjust：vertical/纵向
+                               color = "brown", # 颜色
+                               size = 15, # 字体大小
+                               family = "", # 调整字体类型
+                               face = "bold",  ), 
+    axis.text.y = element_text( size = 10, # 字体大小。注意：各种属性可以指定一个值整体设置，也可以像后面2条一样分别设置
+                                face = c( rep( "italic", 15), rep( "bold.italic", 5 ) ), # 字形
+                                color = c( rep( "black", 15), rep( "orange3", 5 ) ) # 颜色
+    ),
+    # legend.position = c(0.7, 0.3), # 调整legend 的相对xy轴的位置
+    # legend.position = "bottom" # 调整legend 在整个图片的位置，和上面的调整方式选其一
+  ) +
+  labs(x = NULL, y = "Gene expression") +
+  theme(legend.position = 'bottom')
+p3
+
+ggsave("gene expression.pdf", plot = p3, width = 8, height = 4, units = "in", dpi = 300)
+
+
+
+
+### 火山图
+library(EnhancedVolcano)
+
+res05 <- res05[symbol_genes$ENSEMBL,]
+rownames(res05) <- symbol_genes$SYMBOL
+
+degs_temp = res05  %>%as.data.frame() %>% 
+  mutate( DEG = ifelse(padj < 0.05,
+                       ifelse(log2FoldChange > 0, 'up','down'),
+                       'ns' )) 
+summary(degs_temp)
+degs_temp$SYMBOL <- rownames(degs_temp)
+degs_temp$delabel <- NA
+degs_temp[genename,'delabel'] <- degs_temp[genename,'SYMBOL']
+degs_temp[genename,'DEG'] <-'Targets'
+degs_temp$DEG <- factor(degs_temp$DEG,levels = c("down","ns","up","Targets"))
+
+p4 <- ggplot(data=degs_temp, aes(x=log2FoldChange, y=-log10(padj), col=DEG, label=delabel)) +
+  geom_point(size=1) + 
+  geom_text_repel(colour='#e31a1c') +
+  scale_color_manual(values=c("#fec44f","grey","#e0f3db",'#e31a1c')) +
+  theme_cowplot(10)+
+  geom_vline(xintercept= 1, col="grey",linetype=2)+
+  geom_vline(xintercept= -1, col="grey",linetype=2)+
+  geom_hline(yintercept=-log10(0.05), col="grey",linetype=2)
+
+ggsave('volcano.pdf',p4,width = 5,height = 4)
